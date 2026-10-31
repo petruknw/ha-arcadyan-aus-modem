@@ -6,7 +6,7 @@ script and one automation blueprint, so there's nothing to install from HACS and
 cloud service involved.
 
 > **Status:** the script has rebooted a real modem, run from a computer on the same
-> network. Arcadyan makes many models, so check yours with the dry run in step 4.
+> network. Arcadyan makes many models, so check yours with the dry run in step 5.
 > The Home Assistant steps have only been tested against a simulated modem so far.
 > If you try it, please
 > [open an issue](https://github.com/petruknw/ha-arcadyan-aus-modem-reboot/issues) and say whether
@@ -36,7 +36,7 @@ The script reads it from there, so it never appears in a command.
 
 ### 3. Add the command
 
-Add this to `configuration.yaml`, then restart Home Assistant:
+Add this to `configuration.yaml`:
 
 ```yaml
 shell_command:
@@ -49,7 +49,12 @@ place of `sh` too.
 If your modem isn't at `192.168.1.1`, use
 `MODEM_HOST=192.168.0.1 sh /config/arcadyan_modem_reboot.sh` instead.
 
-### 4. Check the login
+### 4. Restart Home Assistant
+
+Restart Home Assistant so it loads the new command. The test reboot and the
+automation below won't work until you do.
+
+### 5. Check the login
 
 Log out of the modem's web page first, because it allows one admin at a time. Then
 run this from a Home Assistant terminal. It logs in and out and doesn't reboot:
@@ -61,7 +66,7 @@ sh /config/arcadyan_modem_reboot.sh --dry-run
 To test a real reboot, run `shell_command.arcadyan_modem_reboot` from
 **Developer tools > Actions**. The internet drops for a minute or two.
 
-### 5. Create the automation
+### 6. Create the automation
 
 [![Open your Home Assistant instance and import this blueprint.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fpetruknw%2Fha-arcadyan-aus-modem-reboot%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Farcadyan_modem%2Freboot_when_offline.yaml)
 
