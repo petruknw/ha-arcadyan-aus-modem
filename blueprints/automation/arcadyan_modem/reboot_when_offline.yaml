@@ -3,8 +3,8 @@ blueprint:
   description: >-
     Reboots the modem after the internet has been down for a set time, then
     waits so it can't reboot in a loop. Pick a sensor or group that is on while
-    the internet works, such as a group of Ping sensors. Needs the
-    shell_command from the ha-arcadyan-aus-modem-reboot README.
+    the internet works, such as a group of Ping sensors. Needs the Arcadyan 5G
+    modem integration.
   domain: automation
   source_url: https://github.com/petruknw/ha-arcadyan-aus-modem-reboot/blob/main/blueprints/automation/arcadyan_modem/reboot_when_offline.yaml
   input:
@@ -42,7 +42,7 @@ triggers:
       minutes: !input offline_minutes
 
 actions:
-  - action: shell_command.arcadyan_modem_reboot
+  - action: arcadyan_modem.reboot
   - delay:
       minutes: !input wait_minutes
 
