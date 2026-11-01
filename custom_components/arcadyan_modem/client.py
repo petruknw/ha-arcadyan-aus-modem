@@ -4,8 +4,7 @@ Quirks that shape this client:
 - Every page that needs a login answers 403 with the login page as its body,
   so a 403 on / is normal and is where the login token comes from.
 - The modem counts bad passwords and locks the login after 5, so nothing here
-  retries a login. The login page's `var flag` stays 0, so failures are also read
-  from its fail counter and the address of the admin who's logged in.
+  retries a login. The login page shows its fail count and any logged-in admin.
 - Only one admin session is allowed, so each operation logs in and out, and a
   lock stops two operations overlapping.
 - Saving the filter can take minutes to answer, and the Wi-Fi restarts, so a
@@ -41,12 +40,10 @@ REBOOT_PAGE = "system_r.htm"
 REBOOT_ACTION = "reboot"
 # The main Wi-Fi on each band. The modem's page offers no filter for guest networks.
 BANDS = ("24G1", "5G1")
-MAX_MACS = 32
 
 MODE_BLOCK = "deny"
 MODE_ALLOW = "allow"
 MODE_OFF = "disable"
-MODE_UNAVAILABLE = "unavailable"
 
 REQUEST_TIMEOUT = 20
 APPLY_TIMEOUT = 120
@@ -56,13 +53,9 @@ CONFIRM_INTERVAL = 10
 # Length of "data:image/gif;base64," plus the fixed 1x1 GIF. The rest is the token.
 _GIF_PREFIX_LEN = 78
 _GIF_SRC = re.compile(r'src="(data:image/gif;base64,[^"]+)"')
-_LOGIN_FLAG = re.compile(r"var flag\s*=\s*(\d+)")
 _LOGIN_FAILS = re.compile(r"rpcd_login_fail_count\s*=\s*'(\d+)'")
 _LOGIN_USER_IP = re.compile(r"var loginUserIp\s*=\s*'([^']*)'")
 
-_FLAG_BAD_PASSWORD = 1
-_FLAG_SESSION_BUSY = 2
-_FLAG_LOCKED = 7
 _MAX_LOGIN_FAILS = 5
 
 
@@ -90,10 +83,6 @@ class AllowListActive(ModemError):
     """The modem uses an allow list, so a block list change would do the opposite."""
 
 
-class FilterUnavailable(ModemError):
-    """This modem doesn't offer the MAC filter this client knows how to use."""
-
-
 @dataclass(frozen=True)
 class FilterState:
     """The main Wi-Fi's MAC filter. The field ids change with each session."""
@@ -106,9 +95,6 @@ class FilterState:
     def blocks(self, mac: str) -> bool:
         """Return True if the modem is currently blocking this address."""
         return self.mode == MODE_BLOCK and mac in self.macs
-
-
-NO_FILTER = FilterState(MODE_UNAVAILABLE, (), (), ())
 
 
 def hash_credential(value: str) -> str:
@@ -134,7 +120,7 @@ def parse_token(html: str) -> str:
 def _config_field(config: str, name: str) -> tuple[str, str]:
     match = re.search(rf'^addCfg\("{name}","([^"]*)","([^"]*)"', config, re.MULTILINE)
     if match is None:
-        raise FilterUnavailable(f"No {name} setting in the modem's page")
+        raise ModemError(f"No {name} setting in the modem's page")
     return match.group(1), match.group(2)
 
 
@@ -162,36 +148,25 @@ def parse_filter(config: str) -> FilterState:
     )
 
 
-def _raise_login_error(url: URL, page: str) -> None:
-    """Raise the reason the login page gives for refusing a login, if it gives one."""
-    flag = url.query.get("err", "0")
-    if not (flag.isdigit() and int(flag)):
-        match = _LOGIN_FLAG.search(page)
-        flag = match.group(1) if match else "0"
+def _raise_login_error(page: str) -> None:
+    """Raise why the modem refused a login. Unknown reasons count as a bad password."""
     fails = _LOGIN_FAILS.search(page)
-    fail_count = int(fails.group(1)) if fails else 0
     user_ip = _LOGIN_USER_IP.search(page)
-
-    if int(flag) == _FLAG_LOCKED or fail_count >= _MAX_LOGIN_FAILS:
+    if fails and int(fails.group(1)) >= _MAX_LOGIN_FAILS:
         raise LoginLocked("The modem login is locked, try again shortly")
-    if int(flag) == _FLAG_SESSION_BUSY or (
-        user_ip and user_ip.group(1) not in ("", "0.0.0.0")
-    ):
+    if user_ip and user_ip.group(1) not in ("", "0.0.0.0"):
         raise SessionBusy("Another user is logged in to the modem")
-    if int(flag) == _FLAG_BAD_PASSWORD or fail_count:
-        raise InvalidAuth("The modem rejected the password")
+    raise InvalidAuth("The modem rejected the password")
 
 
 class ModemClient:
     """Talks to the modem. Holds no session between calls."""
 
-    def __init__(
-        self, host: str, password: str, lock: asyncio.Lock | None = None
-    ) -> None:
-        """Initialize the client. Clients for one modem must share a lock."""
+    def __init__(self, host: str, password: str) -> None:
+        """Initialize the client."""
         self._base = f"http://{host}"
         self._password = password
-        self._lock = lock or asyncio.Lock()
+        self._lock = asyncio.Lock()
 
     def _session(self) -> aiohttp.ClientSession:
         # unsafe=True: aiohttp otherwise drops cookies set by an IP address.
@@ -231,7 +206,7 @@ class ModemClient:
         }
 
         try:
-            _, _, url = await self._fetch(session, "POST", "cgi-bin/luci/admin/", form)
+            await self._fetch(session, "POST", "cgi-bin/luci/admin/", form)
             status, check, _ = await self._fetch(session, "GET", REBOOT_PAGE)
         except ModemConnectionError:
             # The login may have worked, so don't leave the only admin slot taken.
@@ -240,10 +215,8 @@ class ModemClient:
         if status == 200:
             return
 
-        _raise_login_error(url, check)
         if status == 403:
-            # No reason given. Assume the worst, so nothing retries a bad password.
-            raise InvalidAuth("The modem didn't accept the login")
+            _raise_login_error(check)
         await self._logout(session)
         raise ModemError(f"Login failed (status {status})")
 
@@ -285,7 +258,7 @@ class ModemClient:
     async def _read_filter(self, session: aiohttp.ClientSession) -> FilterState:
         status, config, _ = await self._fetch(session, "GET", FILTER_CONFIG)
         if status != 200:
-            raise FilterUnavailable(f"Could not read the filter (status {status})")
+            raise ModemError(f"Could not read the filter (status {status})")
         return parse_filter(config)
 
     async def _confirm_filter(
@@ -354,14 +327,12 @@ class ModemClient:
             else:
                 wanted = tuple(mac for mac in state.macs if mac not in macs)
                 mode = state.mode
-            if len(wanted) > MAX_MACS:
-                raise ModemError(f"The block list is limited to {MAX_MACS} devices")
             if wanted == state.macs and mode == state.mode:
                 return state
 
             status, page, _ = await self._fetch(session, "GET", FILTER_PAGE)
             if status != 200:
-                raise FilterUnavailable(f"Could not open the filter (status {status})")
+                raise ModemError(f"Could not open the filter (status {status})")
             form = {
                 "token": parse_token(page),
                 "submit_button": FILTER_PAGE,

@@ -16,7 +16,7 @@ from homeassistant.config_entries import (
     OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -29,7 +29,6 @@ from homeassistant.helpers.selector import (
 
 from .client import (
     AllowListActive,
-    FilterUnavailable,
     InvalidAuth,
     LoginLocked,
     ModemClient,
@@ -38,12 +37,11 @@ from .client import (
     SessionBusy,
 )
 from .const import CONF_DEVICES, CONF_MAC, DEFAULT_HOST, DOMAIN
-from .coordinator import ArcadyanModemConfigEntry, get_modem_lock
+from .coordinator import ArcadyanModemConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
 _MAC = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
-_ZERO_MAC = "00:00:00:00:00:00"
 
 PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 STEP_USER_SCHEMA = vol.Schema(
@@ -64,13 +62,13 @@ STEP_ADD_DEVICE_SCHEMA = vol.Schema(
 def normalize_mac(value: str) -> str | None:
     """Return the address as AA:BB:CC:DD:EE:FF, or None if it isn't valid."""
     mac = value.strip().upper().replace("-", ":")
-    return mac if _MAC.match(mac) and mac != _ZERO_MAC else None
+    return mac if _MAC.match(mac) else None
 
 
-async def _login_error(hass: HomeAssistant, host: str, password: str) -> str | None:
+async def _login_error(host: str, password: str) -> str | None:
     """Try one login, and return the error key if it failed."""
     try:
-        await ModemClient(host, password, get_modem_lock(hass, host)).async_validate()
+        await ModemClient(host, password).async_validate()
     except ModemConnectionError:
         return "cannot_connect"
     except InvalidAuth:
@@ -104,10 +102,7 @@ class ArcadyanModemConfigFlow(ConfigFlow, domain=DOMAIN):
         """Ask for the host and password, and test them once."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            self._async_abort_entries_match({CONF_HOST: user_input[CONF_HOST]})
-            error = await _login_error(
-                self.hass, user_input[CONF_HOST], user_input[CONF_PASSWORD]
-            )
+            error = await _login_error(user_input[CONF_HOST], user_input[CONF_PASSWORD])
             if error is None:
                 return self.async_create_entry(title="Arcadyan modem", data=user_input)
             errors["base"] = error
@@ -133,9 +128,7 @@ class ArcadyanModemConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
         if user_input is not None:
-            error = await _login_error(
-                self.hass, entry.data[CONF_HOST], user_input[CONF_PASSWORD]
-            )
+            error = await _login_error(entry.data[CONF_HOST], user_input[CONF_PASSWORD])
             if error is None:
                 return self.async_update_reload_and_abort(
                     entry, data_updates=user_input
@@ -160,7 +153,7 @@ class ArcadyanModemOptionsFlow(OptionsFlowWithReload):
             return False
         try:
             await self.config_entry.runtime_data.client.async_set_blocked([mac], False)
-        except (AllowListActive, FilterUnavailable):
+        except AllowListActive:
             return True
         except ModemError:
             return False

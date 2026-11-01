@@ -3,10 +3,11 @@
   "name": "Arcadyan 5G modem",
   "codeowners": ["@petruknw"],
   "config_flow": true,
-  "documentation": "https://github.com/petruknw/ha-arcadyan-aus-modem-reboot",
+  "documentation": "https://github.com/petruknw/ha-arcadyan-aus-modem",
   "integration_type": "device",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/petruknw/ha-arcadyan-aus-modem-reboot/issues",
+  "issue_tracker": "https://github.com/petruknw/ha-arcadyan-aus-modem/issues",
   "requirements": [],
-  "version": "0.2.1"
+  "single_config_entry": true,
+  "version": "0.3.0"
 }

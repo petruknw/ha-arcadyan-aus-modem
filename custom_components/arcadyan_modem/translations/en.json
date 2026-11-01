@@ -23,7 +23,6 @@
       "unknown": "Unexpected reply from the modem. See the Home Assistant log."
     },
     "abort": {
-      "already_configured": "This modem is already set up.",
       "reauth_successful": "The password was updated."
     }
   },

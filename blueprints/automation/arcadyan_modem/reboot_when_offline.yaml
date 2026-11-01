@@ -6,7 +6,7 @@ blueprint:
     the internet works, such as a group of Ping sensors. Needs the Arcadyan 5G
     modem integration.
   domain: automation
-  source_url: https://github.com/petruknw/ha-arcadyan-aus-modem-reboot/blob/main/blueprints/automation/arcadyan_modem/reboot_when_offline.yaml
+  source_url: https://github.com/petruknw/ha-arcadyan-aus-modem/blob/main/blueprints/automation/arcadyan_modem/reboot_when_offline.yaml
   input:
     connectivity_entity:
       name: Internet connectivity sensor or group
