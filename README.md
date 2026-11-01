@@ -82,6 +82,41 @@ Import the blueprint, create an automation from it, and choose:
 If you use a group, leave its **All entities** option off. The group then turns off
 only when every target fails, so one unreachable target can't trigger a reboot.
 
+## Block devices on the Wi-Fi
+
+This is optional and separate from the reboot steps above. A Home Assistant
+integration gives each device a switch, and turning it on adds that device to the
+modem's Wi-Fi block list. The rest of the list stays as it is, and it doesn't reboot
+the modem.
+
+> **Status:** adding to and removing from the block list has worked on a real modem,
+> but the integration itself has only been tested against a simulated modem so far.
+
+[![Open your Home Assistant instance and add this repository to HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=petruknw&repository=ha-arcadyan-aus-modem-reboot&category=integration)
+
+1. Add this repository to HACS with the button above, or add
+   `https://github.com/petruknw/ha-arcadyan-aus-modem-reboot` as a custom repository
+   of type **Integration**.
+2. Download **Arcadyan 5G modem** in HACS, then restart Home Assistant.
+3. Log out of the modem's web page, go to **Settings > Devices & services > Add
+   integration**, search for **Arcadyan 5G modem**, and enter your password.
+4. Open the integration, choose **Configure > Add a device**, and enter its name and
+   MAC address. Each device gets a **Block** switch.
+
+Before you rely on it:
+
+- **Changes are slow:** the modem can take about a minute to answer, and something
+  restarts for every change, so expect a brief interruption.
+- **Main Wi-Fi only:** the modem's filter page doesn't cover guest networks.
+- **Use the address your network sees:** phones and tablets often use a private
+  address for each network, and it can change if the device resets it.
+- **It only covers this Wi-Fi:** a device with mobile data stays online.
+- **One admin at a time:** Home Assistant logs in every 5 minutes to read the list.
+  If that overlaps with a reboot, the reboot can fail with "someone else is logged
+  in".
+- **Allow lists:** the integration won't change anything while the modem is using an
+  allow list, because a wrong one would take other devices off the Wi-Fi.
+
 ## Troubleshooting
 
 Failures appear in the Home Assistant log as a failed `shell_command`. To see the

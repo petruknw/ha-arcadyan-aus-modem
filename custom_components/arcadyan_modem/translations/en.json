@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "description": "Use the password on the modem's label, or your own if you changed it.",
+        "data": {
+          "host": "Host",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "description": "The modem rejected the saved password. Enter the current one.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the modem.",
+      "invalid_auth": "The modem rejected the password. It locks the login after 5 bad attempts.",
+      "session_busy": "Someone else is logged in to the modem. Log out of its web page and try again.",
+      "login_locked": "The modem login is locked after too many bad passwords. Wait a minute and try again.",
+      "unknown": "Unexpected reply from the modem. See the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This modem is already set up.",
+      "reauth_successful": "The password was updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "menu_options": {
+          "add_device": "Add a device",
+          "remove_device": "Remove a device"
+        }
+      },
+      "add_device": {
+        "title": "Add a device",
+        "description": "Use the Wi-Fi address your network sees. Phones and tablets often use a private address for each network.",
+        "data": {
+          "name": "Name",
+          "mac": "MAC address"
+        }
+      },
+      "remove_device": {
+        "title": "Remove a device",
+        "data": {
+          "mac": "Device"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "Use an address like AA:BB:CC:DD:EE:FF.",
+      "already_added": "This device has already been added.",
+      "still_blocked": "Turn this device's switch off first, or it would stay blocked."
+    }
+  }
+}

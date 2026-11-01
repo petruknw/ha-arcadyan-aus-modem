@@ -83,6 +83,11 @@ logout() {
     request -o /dev/null "$base/logout.htm" || true
 }
 
+case "${1:-}" in
+    "" | --dry-run) ;;
+    *) fail "usage: sh $0 [--dry-run]" ;;
+esac
+
 read_password
 login
 
