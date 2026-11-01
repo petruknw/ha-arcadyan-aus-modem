@@ -112,10 +112,24 @@ Before you rely on it:
   address for each network, and it can change if the device resets it.
 - **It only covers this Wi-Fi:** a device with mobile data stays online.
 - **One admin at a time:** Home Assistant logs in every 5 minutes to read the list.
-  If that overlaps with a reboot, the reboot can fail with "someone else is logged
-  in".
+  If that overlaps with the reboot script, the script can fail with "someone else is
+  logged in". The integration's own reboot action below waits its turn.
 - **Allow lists:** the integration won't change anything while the modem is using an
   allow list, because a wrong one would take other devices off the Wi-Fi.
+
+### Reboot from the integration
+
+The integration also adds a **Reboot modem** action, which any automation can use
+instead of the script. It uses the password you gave the integration, so it needs no
+script, `shell_command` or `secrets.yaml` entry:
+
+```yaml
+actions:
+  - action: arcadyan_modem.reboot
+```
+
+This action has only been tested against a simulated modem so far. The blueprint
+still uses the script.
 
 ## Troubleshooting
 

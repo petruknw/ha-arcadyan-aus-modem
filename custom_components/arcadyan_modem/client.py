@@ -31,6 +31,10 @@ FILTER_PAGE = "wlan_mac_filter.htm"
 FILTER_CONFIG = "cgi/cgi_wlan_mac_filter.js"
 # subFormWiFiMACFilter in /js/subformvar.js.
 FILTER_ACTION = "ui_wireless"
+REBOOT_PAGE = "system_r.htm"
+# subFormSYSBoot in /js/subformvar.js. The same file defines the factory reset
+# action, so never derive this value from the modem at runtime.
+REBOOT_ACTION = "reboot"
 # The main Wi-Fi on each band. The modem's page offers no filter for guest networks.
 BANDS = ("24G1", "5G1")
 MAX_MACS = 32
@@ -259,6 +263,39 @@ class ModemClient:
             return
         if status != 200:
             raise ModemError(f"The modem refused the change (status {status})")
+
+    async def _send_reboot(self, session: aiohttp.ClientSession) -> None:
+        status, page, _ = await self._fetch(session, "GET", REBOOT_PAGE)
+        if status != 200:
+            raise ModemError(f"Could not open the reboot page (status {status})")
+
+        try:
+            status, _, _ = await self._fetch(
+                session,
+                "POST",
+                "apply_abstract.cgi",
+                {
+                    "token": parse_token(page),
+                    "submit_button": "index.htm",
+                    "action": REBOOT_ACTION,
+                },
+            )
+        except ModemConnectionError:
+            # The modem may drop the connection as it goes down.
+            _LOGGER.debug("Connection dropped while sending the reboot")
+            return
+        if status != 200:
+            raise ModemError(f"The modem refused the reboot (status {status})")
+
+    async def async_reboot(self) -> None:
+        """Log in and ask the modem to reboot, which also ends the session."""
+        async with self._lock, self._session() as session:
+            await self._login(session)
+            try:
+                await self._send_reboot(session)
+            except ModemError:
+                await self._logout(session)
+                raise
 
     async def async_read(self) -> FilterState:
         """Log in, read the filter, and log out."""

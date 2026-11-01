@@ -27,6 +27,12 @@
       "reauth_successful": "The password was updated."
     }
   },
+  "services": {
+    "reboot": {
+      "name": "Reboot modem",
+      "description": "Reboots the modem. The internet drops for a minute or two."
+    }
+  },
   "options": {
     "step": {
       "init": {
