@@ -51,6 +51,7 @@
       },
       "remove_device": {
         "title": "Remove a device",
+        "description": "Removing a device also takes it off the modem's block list, which restarts the Wi-Fi if it was listed.",
         "data": {
           "mac": "Device"
         }
@@ -59,7 +60,7 @@
     "error": {
       "invalid_mac": "Use an address like AA:BB:CC:DD:EE:FF.",
       "already_added": "This device has already been added.",
-      "still_blocked": "Turn this device's switch off first, or it would stay blocked."
+      "not_ready": "Could not update the modem, so the device was kept. Try again shortly."
     }
   }
 }

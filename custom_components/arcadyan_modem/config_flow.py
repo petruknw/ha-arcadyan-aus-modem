@@ -10,12 +10,13 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import (
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -27,6 +28,8 @@ from homeassistant.helpers.selector import (
 )
 
 from .client import (
+    AllowListActive,
+    FilterUnavailable,
     InvalidAuth,
     LoginLocked,
     ModemClient,
@@ -35,7 +38,7 @@ from .client import (
     SessionBusy,
 )
 from .const import CONF_DEVICES, CONF_MAC, DEFAULT_HOST, DOMAIN
-from .coordinator import ArcadyanModemConfigEntry
+from .coordinator import ArcadyanModemConfigEntry, get_modem_lock
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,10 +67,10 @@ def normalize_mac(value: str) -> str | None:
     return mac if _MAC.match(mac) and mac != _ZERO_MAC else None
 
 
-async def _login_error(host: str, password: str) -> str | None:
+async def _login_error(hass: HomeAssistant, host: str, password: str) -> str | None:
     """Try one login, and return the error key if it failed."""
     try:
-        await ModemClient(host, password).async_read()
+        await ModemClient(host, password, get_modem_lock(hass, host)).async_validate()
     except ModemConnectionError:
         return "cannot_connect"
     except InvalidAuth:
@@ -102,7 +105,9 @@ class ArcadyanModemConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             self._async_abort_entries_match({CONF_HOST: user_input[CONF_HOST]})
-            error = await _login_error(user_input[CONF_HOST], user_input[CONF_PASSWORD])
+            error = await _login_error(
+                self.hass, user_input[CONF_HOST], user_input[CONF_PASSWORD]
+            )
             if error is None:
                 return self.async_create_entry(title="Arcadyan modem", data=user_input)
             errors["base"] = error
@@ -128,7 +133,9 @@ class ArcadyanModemConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         entry = self._get_reauth_entry()
         if user_input is not None:
-            error = await _login_error(entry.data[CONF_HOST], user_input[CONF_PASSWORD])
+            error = await _login_error(
+                self.hass, entry.data[CONF_HOST], user_input[CONF_PASSWORD]
+            )
             if error is None:
                 return self.async_update_reload_and_abort(
                     entry, data_updates=user_input
@@ -146,6 +153,18 @@ class ArcadyanModemOptionsFlow(OptionsFlowWithReload):
     @property
     def _devices(self) -> list[dict[str, Any]]:
         return list(self.config_entry.options.get(CONF_DEVICES, []))
+
+    async def _async_unblock(self, mac: str) -> bool:
+        """Return True once the address is off the block list, or there isn't one."""
+        if self.config_entry.state is not ConfigEntryState.LOADED:
+            return False
+        try:
+            await self.config_entry.runtime_data.client.async_set_blocked([mac], False)
+        except (AllowListActive, FilterUnavailable):
+            return True
+        except ModemError:
+            return False
+        return True
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -185,14 +204,12 @@ class ArcadyanModemOptionsFlow(OptionsFlowWithReload):
     async def async_step_remove_device(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Remove a device, unless it would stay blocked with no switch."""
+        """Remove a device and take it off the block list, or it'd stay on with no switch."""
         errors: dict[str, str] = {}
         devices = self._devices
         if user_input is not None:
             mac = user_input[CONF_MAC]
-            if self.config_entry.runtime_data.data.blocks(mac):
-                errors["base"] = "still_blocked"
-            else:
+            if await self._async_unblock(mac):
                 registry = er.async_get(self.hass)
                 entity_id = registry.async_get_entity_id(
                     "switch", DOMAIN, f"{self.config_entry.entry_id}_{mac}"
@@ -206,6 +223,7 @@ class ArcadyanModemOptionsFlow(OptionsFlowWithReload):
                         ]
                     }
                 )
+            errors["base"] = "not_ready"
 
         schema = vol.Schema(
             {

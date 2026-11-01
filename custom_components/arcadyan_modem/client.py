@@ -1,24 +1,28 @@
-"""Client for the Wi-Fi MAC filter in an Arcadyan 5G modem's web UI.
+"""Client for an Arcadyan 5G modem's web UI: the Wi-Fi MAC filter and rebooting.
 
 Quirks that shape this client:
 - Every page that needs a login answers 403 with the login page as its body,
   so a 403 on / is normal and is where the login token comes from.
 - The modem counts bad passwords and locks the login after 5, so nothing here
-  retries a login.
+  retries a login. The login page's `var flag` stays 0, so failures are also read
+  from its fail counter and the address of the admin who's logged in.
 - Only one admin session is allowed, so each operation logs in and out, and a
   lock stops two operations overlapping.
-- Saving the filter can take a minute to answer, and the Wi-Fi restarts.
+- Saving the filter can take minutes to answer, and the Wi-Fi restarts, so a
+  change only counts once the modem shows it.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import hashlib
 import logging
 import re
+import time
 
 import aiohttp
 from yarl import URL
@@ -42,18 +46,24 @@ MAX_MACS = 32
 MODE_BLOCK = "deny"
 MODE_ALLOW = "allow"
 MODE_OFF = "disable"
+MODE_UNAVAILABLE = "unavailable"
 
 REQUEST_TIMEOUT = 20
 APPLY_TIMEOUT = 120
+CONFIRM_TIMEOUT = 600
+CONFIRM_INTERVAL = 10
 
 # Length of "data:image/gif;base64," plus the fixed 1x1 GIF. The rest is the token.
 _GIF_PREFIX_LEN = 78
 _GIF_SRC = re.compile(r'src="(data:image/gif;base64,[^"]+)"')
 _LOGIN_FLAG = re.compile(r"var flag\s*=\s*(\d+)")
+_LOGIN_FAILS = re.compile(r"rpcd_login_fail_count\s*=\s*'(\d+)'")
+_LOGIN_USER_IP = re.compile(r"var loginUserIp\s*=\s*'([^']*)'")
 
 _FLAG_BAD_PASSWORD = 1
 _FLAG_SESSION_BUSY = 2
 _FLAG_LOCKED = 7
+_MAX_LOGIN_FAILS = 5
 
 
 class ModemError(Exception):
@@ -80,6 +90,10 @@ class AllowListActive(ModemError):
     """The modem uses an allow list, so a block list change would do the opposite."""
 
 
+class FilterUnavailable(ModemError):
+    """This modem doesn't offer the MAC filter this client knows how to use."""
+
+
 @dataclass(frozen=True)
 class FilterState:
     """The main Wi-Fi's MAC filter. The field ids change with each session."""
@@ -92,6 +106,9 @@ class FilterState:
     def blocks(self, mac: str) -> bool:
         """Return True if the modem is currently blocking this address."""
         return self.mode == MODE_BLOCK and mac in self.macs
+
+
+NO_FILTER = FilterState(MODE_UNAVAILABLE, (), (), ())
 
 
 def hash_credential(value: str) -> str:
@@ -117,7 +134,7 @@ def parse_token(html: str) -> str:
 def _config_field(config: str, name: str) -> tuple[str, str]:
     match = re.search(rf'^addCfg\("{name}","([^"]*)","([^"]*)"', config, re.MULTILINE)
     if match is None:
-        raise ModemError(f"No {name} setting in the modem's page")
+        raise FilterUnavailable(f"No {name} setting in the modem's page")
     return match.group(1), match.group(2)
 
 
@@ -145,26 +162,36 @@ def parse_filter(config: str) -> FilterState:
     )
 
 
-def _login_error_code(url: URL, *pages: str) -> int:
-    """Return the login page's error flag, or 0 if it gave none."""
-    code = url.query.get("err", "0")
-    if code.isdigit() and int(code):
-        return int(code)
-    for page in pages:
+def _raise_login_error(url: URL, page: str) -> None:
+    """Raise the reason the login page gives for refusing a login, if it gives one."""
+    flag = url.query.get("err", "0")
+    if not (flag.isdigit() and int(flag)):
         match = _LOGIN_FLAG.search(page)
-        if match and int(match.group(1)):
-            return int(match.group(1))
-    return 0
+        flag = match.group(1) if match else "0"
+    fails = _LOGIN_FAILS.search(page)
+    fail_count = int(fails.group(1)) if fails else 0
+    user_ip = _LOGIN_USER_IP.search(page)
+
+    if int(flag) == _FLAG_LOCKED or fail_count >= _MAX_LOGIN_FAILS:
+        raise LoginLocked("The modem login is locked, try again shortly")
+    if int(flag) == _FLAG_SESSION_BUSY or (
+        user_ip and user_ip.group(1) not in ("", "0.0.0.0")
+    ):
+        raise SessionBusy("Another user is logged in to the modem")
+    if int(flag) == _FLAG_BAD_PASSWORD or fail_count:
+        raise InvalidAuth("The modem rejected the password")
 
 
 class ModemClient:
     """Talks to the modem. Holds no session between calls."""
 
-    def __init__(self, host: str, password: str) -> None:
-        """Initialize the client."""
+    def __init__(
+        self, host: str, password: str, lock: asyncio.Lock | None = None
+    ) -> None:
+        """Initialize the client. Clients for one modem must share a lock."""
         self._base = f"http://{host}"
         self._password = password
-        self._lock = asyncio.Lock()
+        self._lock = lock or asyncio.Lock()
 
     def _session(self) -> aiohttp.ClientSession:
         # unsafe=True: aiohttp otherwise drops cookies set by an IP address.
@@ -192,35 +219,33 @@ class ModemClient:
         except (aiohttp.ClientError, TimeoutError) as err:
             raise ModemConnectionError(f"Could not reach {self._base}") from err
 
-    async def _login(self, session: aiohttp.ClientSession) -> str:
-        """Log in and return the filter page, which holds the session token."""
+    async def _login(self, session: aiohttp.ClientSession) -> None:
         _, page, _ = await self._fetch(session, "GET", "")
         # The login page's own script sets this cookie before it submits.
         session.cookie_jar.update_cookies({"popup": "1"}, URL(self._base))
-        _, result, url = await self._fetch(
-            session,
-            "POST",
-            "cgi-bin/luci/admin/",
-            {
-                "token": parse_token(page),
-                "nextp": "index.htm",
-                "luci_password": hash_credential(self._password),
-                "luci_username": hash_credential(USERNAME),
-            },
-        )
+        form = {
+            "token": parse_token(page),
+            "nextp": "index.htm",
+            "luci_password": hash_credential(self._password),
+            "luci_username": hash_credential(USERNAME),
+        }
 
-        status, filter_page, _ = await self._fetch(session, "GET", FILTER_PAGE)
+        try:
+            _, _, url = await self._fetch(session, "POST", "cgi-bin/luci/admin/", form)
+            status, check, _ = await self._fetch(session, "GET", REBOOT_PAGE)
+        except ModemConnectionError:
+            # The login may have worked, so don't leave the only admin slot taken.
+            await self._logout(session)
+            raise
         if status == 200:
-            return filter_page
+            return
 
-        code = _login_error_code(url, result, filter_page)
-        if code == _FLAG_BAD_PASSWORD:
-            raise InvalidAuth("The modem rejected the password")
-        if code == _FLAG_SESSION_BUSY:
-            raise SessionBusy("Another user is logged in to the modem")
-        if code == _FLAG_LOCKED:
-            raise LoginLocked("The modem login is locked, try again shortly")
-        raise ModemError(f"Login failed (status {status}, flag {code})")
+        _raise_login_error(url, check)
+        if status == 403:
+            # No reason given. Assume the worst, so nothing retries a bad password.
+            raise InvalidAuth("The modem didn't accept the login")
+        await self._logout(session)
+        raise ModemError(f"Login failed (status {status})")
 
     async def _logout(self, session: aiohttp.ClientSession) -> None:
         """Free the modem's only admin session. Failure here is not fatal."""
@@ -229,82 +254,83 @@ class ModemClient:
         except ModemError as err:
             _LOGGER.debug("Logout failed: %s", err)
 
+    @asynccontextmanager
+    async def _logged_in(self) -> AsyncIterator[aiohttp.ClientSession]:
+        """Hold the lock and an admin session, and always give the session back."""
+        async with self._lock, self._session() as session:
+            await self._login(session)
+            try:
+                yield session
+            finally:
+                await self._logout(session)
+
+    async def _apply(
+        self,
+        session: aiohttp.ClientSession,
+        form: dict[str, str],
+        timeout: float,
+        name: str,
+    ) -> None:
+        """Send a form to the modem, which may drop the connection as it applies it."""
+        try:
+            status, _, _ = await self._fetch(
+                session, "POST", "apply_abstract.cgi", form, timeout
+            )
+        except ModemConnectionError:
+            _LOGGER.debug("Connection dropped while sending the %s", name)
+            return
+        if status != 200:
+            raise ModemError(f"The modem refused the {name} (status {status})")
+
     async def _read_filter(self, session: aiohttp.ClientSession) -> FilterState:
         status, config, _ = await self._fetch(session, "GET", FILTER_CONFIG)
         if status != 200:
-            raise ModemError(f"Could not read the filter (status {status})")
+            raise FilterUnavailable(f"Could not read the filter (status {status})")
         return parse_filter(config)
 
-    async def _save_filter(
-        self,
-        session: aiohttp.ClientSession,
-        token: str,
-        state: FilterState,
-        macs: tuple[str, ...],
-        mode: str,
-    ) -> None:
-        form = {
-            "token": token,
-            "submit_button": FILTER_PAGE,
-            "action": FILTER_ACTION,
-        }
-        # With band steering the two bands must match, so both are always sent.
-        form.update(dict.fromkeys(state.list_ids, "|".join(macs)))
-        if mode != state.mode:
-            form.update(dict.fromkeys(state.mode_ids, mode))
+    async def _confirm_filter(
+        self, session: aiohttp.ClientSession, macs: tuple[str, ...], mode: str
+    ) -> FilterState:
+        """Wait for the modem to show a change, keeping the lock so nothing overwrites it."""
+        deadline = time.monotonic() + CONFIRM_TIMEOUT
+        while True:
+            try:
+                state = await self._read_filter(session)
+            except ModemError as err:
+                _LOGGER.debug("Waiting for the modem: %s", err)
+            else:
+                if set(state.macs) == set(macs) and state.mode == mode:
+                    return state
+            if time.monotonic() >= deadline:
+                raise ModemError("The modem didn't confirm the change")
+            await asyncio.sleep(CONFIRM_INTERVAL)
 
-        try:
-            status, _, _ = await self._fetch(
-                session, "POST", "apply_abstract.cgi", form, APPLY_TIMEOUT
-            )
-        except ModemConnectionError:
-            # The Wi-Fi restarts to apply this, which can drop the connection.
-            _LOGGER.debug("Connection dropped while saving the filter")
-            return
-        if status != 200:
-            raise ModemError(f"The modem refused the change (status {status})")
+    async def async_validate(self) -> None:
+        """Check the password by logging in and out."""
+        async with self._logged_in():
+            pass
 
-    async def _send_reboot(self, session: aiohttp.ClientSession) -> None:
-        status, page, _ = await self._fetch(session, "GET", REBOOT_PAGE)
-        if status != 200:
-            raise ModemError(f"Could not open the reboot page (status {status})")
-
-        try:
-            status, _, _ = await self._fetch(
+    async def async_reboot(self) -> None:
+        """Log in and ask the modem to reboot."""
+        async with self._logged_in() as session:
+            status, page, _ = await self._fetch(session, "GET", REBOOT_PAGE)
+            if status != 200:
+                raise ModemError(f"Could not open the reboot page (status {status})")
+            await self._apply(
                 session,
-                "POST",
-                "apply_abstract.cgi",
                 {
                     "token": parse_token(page),
                     "submit_button": "index.htm",
                     "action": REBOOT_ACTION,
                 },
+                REQUEST_TIMEOUT,
+                "reboot",
             )
-        except ModemConnectionError:
-            # The modem may drop the connection as it goes down.
-            _LOGGER.debug("Connection dropped while sending the reboot")
-            return
-        if status != 200:
-            raise ModemError(f"The modem refused the reboot (status {status})")
-
-    async def async_reboot(self) -> None:
-        """Log in and ask the modem to reboot, which also ends the session."""
-        async with self._lock, self._session() as session:
-            await self._login(session)
-            try:
-                await self._send_reboot(session)
-            except ModemError:
-                await self._logout(session)
-                raise
 
     async def async_read(self) -> FilterState:
         """Log in, read the filter, and log out."""
-        async with self._lock, self._session() as session:
-            await self._login(session)
-            try:
-                return await self._read_filter(session)
-            finally:
-                await self._logout(session)
+        async with self._logged_in() as session:
+            return await self._read_filter(session)
 
     async def async_set_blocked(
         self, macs: Iterable[str], blocked: bool
@@ -315,28 +341,35 @@ class ModemClient:
         other device off the Wi-Fi.
         """
         macs = tuple(macs)
-        async with self._lock, self._session() as session:
-            page = await self._login(session)
-            try:
-                state = await self._read_filter(session)
-                if state.mode == MODE_ALLOW:
-                    raise AllowListActive("The modem is using an allow list")
+        async with self._logged_in() as session:
+            state = await self._read_filter(session)
+            if state.mode == MODE_ALLOW:
+                raise AllowListActive("The modem is using an allow list")
 
-                if blocked:
-                    wanted = state.macs + tuple(
-                        mac for mac in macs if mac not in state.macs
-                    )
-                    mode = MODE_BLOCK
-                else:
-                    wanted = tuple(mac for mac in state.macs if mac not in macs)
-                    mode = state.mode
-                if len(wanted) > MAX_MACS:
-                    raise ModemError(f"The block list is limited to {MAX_MACS} devices")
+            if blocked:
+                wanted = state.macs + tuple(
+                    mac for mac in macs if mac not in state.macs
+                )
+                mode = MODE_BLOCK
+            else:
+                wanted = tuple(mac for mac in state.macs if mac not in macs)
+                mode = state.mode
+            if len(wanted) > MAX_MACS:
+                raise ModemError(f"The block list is limited to {MAX_MACS} devices")
+            if wanted == state.macs and mode == state.mode:
+                return state
 
-                if wanted != state.macs or mode != state.mode:
-                    await self._save_filter(
-                        session, parse_token(page), state, wanted, mode
-                    )
-                return FilterState(mode, wanted, state.mode_ids, state.list_ids)
-            finally:
-                await self._logout(session)
+            status, page, _ = await self._fetch(session, "GET", FILTER_PAGE)
+            if status != 200:
+                raise FilterUnavailable(f"Could not open the filter (status {status})")
+            form = {
+                "token": parse_token(page),
+                "submit_button": FILTER_PAGE,
+                "action": FILTER_ACTION,
+            }
+            # With band steering the two bands must match, so both are always sent.
+            form.update(dict.fromkeys(state.list_ids, "|".join(wanted)))
+            if mode != state.mode:
+                form.update(dict.fromkeys(state.mode_ids, mode))
+            await self._apply(session, form, APPLY_TIMEOUT, "change")
+            return await self._confirm_filter(session, wanted, mode)

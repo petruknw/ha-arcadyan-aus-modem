@@ -10,7 +10,11 @@ from homeassistant.helpers.typing import ConfigType
 
 from .client import ModemClient, ModemError
 from .const import DOMAIN
-from .coordinator import ArcadyanModemConfigEntry, ArcadyanModemCoordinator
+from .coordinator import (
+    ArcadyanModemConfigEntry,
+    ArcadyanModemCoordinator,
+    get_modem_lock,
+)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = [Platform.SWITCH]
@@ -38,7 +42,10 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ArcadyanModemConfigEntry
 ) -> bool:
     """Set up the modem."""
-    client = ModemClient(entry.data[CONF_HOST], entry.data[CONF_PASSWORD])
+    host = entry.data[CONF_HOST]
+    client = ModemClient(
+        host, entry.data[CONF_PASSWORD], get_modem_lock(hass, host)
+    )
     coordinator = ArcadyanModemCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator

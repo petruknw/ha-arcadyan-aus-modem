@@ -12,7 +12,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .client import ModemError
+from .client import MODE_UNAVAILABLE, ModemError
 from .const import CONF_DEVICES, CONF_MAC, DOMAIN
 from .coordinator import ArcadyanModemConfigEntry, ArcadyanModemCoordinator
 
@@ -51,6 +51,11 @@ class BlockDeviceSwitch(CoordinatorEntity[ArcadyanModemCoordinator], SwitchEntit
             name="Arcadyan modem",
             manufacturer="Arcadyan",
         )
+
+    @property
+    def available(self) -> bool:
+        """Return False if this modem has no filter to control."""
+        return super().available and self.coordinator.data.mode != MODE_UNAVAILABLE
 
     @property
     def is_on(self) -> bool:

@@ -105,8 +105,9 @@ the modem.
 
 Before you rely on it:
 
-- **Changes are slow:** the modem can take about a minute to answer, and something
-  restarts for every change, so expect a brief interruption.
+- **Changes are slow:** the modem can take minutes to apply a change, and something
+  restarts for every change, so expect a brief interruption. A switch only changes
+  once the modem shows the change.
 - **Main Wi-Fi only:** the modem's filter page doesn't cover guest networks.
 - **Use the address your network sees:** phones and tablets often use a private
   address for each network, and it can change if the device resets it.
